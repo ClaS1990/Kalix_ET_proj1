@@ -529,9 +529,15 @@ impl Model {
             .collect();
         if !undeclared.is_empty() {
             return Err(format!(
-                "input '{}' declared but not supplied",
+                "Input '{}' declared but not supplied",
                 undeclared.join("', '")
             ));
+        }
+
+        //2c) Reject inputs with no timestep: no rows, one row, or a step of 0.
+        //   Steps 4 and 6 divide by the step, so this must come first.
+        for source in &self.input_sources {
+            source.check_has_timestep()?;
         }
 
         //3) Read the input data from file
@@ -551,11 +557,14 @@ impl Model {
             for col in source.columns() {
                 let input_ts = &col.timeseries;
 
-                // Validate that input step size matches simulation step size
+                // Validate that input step size matches simulation step size. Name the
+                // input by its data reference: two files can share a column header.
                 if input_ts.step_size != self.configuration.sim_stepsize {
                     return Err(format!(
-                        "Input timeseries '{}' has step_size {} but simulation requires step_size {}",
-                        input_ts.name, input_ts.step_size, self.configuration.sim_stepsize
+                        "Input '{}' has a timestep of {}s but the simulation runs at {}s. \
+                         All inputs must share the same timestep.",
+                        col.alias_colname_path.as_deref().unwrap_or(&col.full_colname_path),
+                        input_ts.step_size, self.configuration.sim_stepsize
                     ));
                 }
 
@@ -754,6 +763,18 @@ impl Model {
 
     /// Determine the simulation period on the basis of the available input data
     pub fn auto_determine_simulation_period(&mut self) -> Result<(), String> {
+        /// A specified `start` after the specified `end` is refused, naming both.
+        fn check_start_not_after_end(start: u64, end: u64, step: u64) -> Result<(), String> {
+            if start > end {
+                return Err(format!(
+                    "Specified start '{}' is after end '{}'.",
+                    u64_to_date_string_for_step_size(start, step),
+                    u64_to_date_string_for_step_size(end, step)
+                ));
+            }
+            Ok(())
+        }
+
         // Get a vec of the critical data from the data_cache
         let civ = self.data_cache.get_critical_input_names();
 
@@ -782,12 +803,11 @@ impl Model {
                     );
                 }
             }
-            if self.configuration.sim_start_timestamp > self.configuration.sim_end_timestamp {
-                return Err("Specified start date is before end date.".to_string());
-            }
-
             // Default to daily step size and calculate n_steps //TODO: make this customisable
             self.configuration.sim_stepsize = 86400;
+            check_start_not_after_end(self.configuration.sim_start_timestamp,
+                                      self.configuration.sim_end_timestamp,
+                                      self.configuration.sim_stepsize)?;
             self.configuration.sim_nsteps = 1
                 + (self.configuration.sim_end_timestamp - self.configuration.sim_start_timestamp)
                     / self.configuration.sim_stepsize;
@@ -800,6 +820,7 @@ impl Model {
         // As you find them, you can go ahead and update the mask of data availability.
         let mut critical_data_availability_mask: Option<Timeseries> = None;
         let mut first_critical_name = String::new();
+        let critical_names = civ.join("', '");
         for ci in civ {
             let ci_lower = ci.to_lowercase();
 
@@ -832,6 +853,13 @@ impl Model {
                             first_critical_name = ci.to_string();
                         }
                         Some(ref mut mask) => {
+                            if ts.timeseries.step_size != mask.step_size {
+                                return Err(format!(
+                                    "Input '{}' has a timestep of {}s but '{}' has {}s. \
+                                     All inputs must share the same timestep.",
+                                    ci, ts.timeseries.step_size, first_critical_name, mask.step_size
+                                ));
+                            }
                             // Out-of-phase inputs are rejected, never realigned.
                             if !same_phase(mask.start_timestamp, ts.timeseries.start_timestamp, mask.step_size) {
                                 return Err(format!(
@@ -856,15 +884,12 @@ impl Model {
         // Like Fors, we are going to default to the first period.
         let mask = critical_data_availability_mask.unwrap();
 
-        //Look for the start.
-        //Start and 0 and break when we find the first non-nan value.
-        let mut start_index = 0;
-        for i in 0..mask.len() {
-            if !mask.values[i].is_nan() {
-                start_index = i;
-                break;
-            }
-        }
+        //Look for the start: the first non-nan value. With none, there is no period to run.
+        let Some(start_index) = mask.values.iter().position(|v| !v.is_nan()) else {
+            return Err(format!(
+                "No timestep has data for every critical input ('{}').", critical_names
+            ));
+        };
 
         //Look for the end (exclusive)
         //Start at start_index and then break when we find the first nan value.
@@ -887,8 +912,24 @@ impl Model {
 
         // Override with dates specified in the model, if relevant. They must be in
         // step with the data: a start between two steps would shift every input.
+        if let (Some(start), Some(end)) = (self.configuration.specified_sim_start_timestamp,
+                                           self.configuration.specified_sim_end_timestamp) {
+            check_start_not_after_end(start, end, self.configuration.sim_stepsize)?;
+        }
         let data_start = self.configuration.sim_start_timestamp;
+        let data_end = self.configuration.sim_end_timestamp;
         let step = self.configuration.sim_stepsize;
+        let check_in_range = |what: &str, ts: u64| -> Result<(), String> {
+            if ts < data_start || ts > data_end {
+                return Err(format!(
+                    "Specified {} '{}' is outside the input data ({} to {}).",
+                    what, u64_to_date_string_for_step_size(ts, step),
+                    u64_to_date_string_for_step_size(data_start, step),
+                    u64_to_date_string_for_step_size(data_end, step)
+                ));
+            }
+            Ok(())
+        };
         let check_in_step = |what: &str, ts: u64| -> Result<(), String> {
             if same_phase(ts, data_start, step) {
                 return Ok(());
@@ -902,11 +943,7 @@ impl Model {
         };
         match self.configuration.specified_sim_start_timestamp {
             Some(timestamp) => {
-                if (timestamp < self.configuration.sim_start_timestamp)
-                    || (timestamp > self.configuration.sim_end_timestamp)
-                {
-                    return Err("Specified start inconsistent with input data.".to_string());
-                }
+                check_in_range("start", timestamp)?;
                 check_in_step("start", timestamp)?;
                 self.configuration.sim_start_timestamp = timestamp;
                 self.configuration.sim_nsteps = 1
@@ -918,11 +955,7 @@ impl Model {
         }
         match self.configuration.specified_sim_end_timestamp {
             Some(timestamp) => {
-                if (timestamp < self.configuration.sim_start_timestamp)
-                    || (timestamp > self.configuration.sim_end_timestamp)
-                {
-                    return Err("Specified end inconsistent with input data.".to_string());
-                }
+                check_in_range("end", timestamp)?;
                 check_in_step("end", timestamp)?;
                 self.configuration.sim_end_timestamp = timestamp;
                 self.configuration.sim_nsteps = 1

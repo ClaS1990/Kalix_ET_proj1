@@ -7,7 +7,7 @@ mod error;
 
 use kalix::io::error::KalixIoError;
 use kalix::io::ini_model_io::IniModelIO;
-use kalix::io::model_input_swap;
+use kalix::io::model_input_swap::{self, SetInputError};
 use kalix::io::model_patch::{patch_delete, patch_merge, patch_replace, PatchError};
 use kalix::io::{model_query, pixie_io};
 use kalix::model::{Model, OutputLookupError};
@@ -59,6 +59,13 @@ fn patch_err_to_py<'py>(py: Python<'py>, e: PatchError) -> PyErr {
     }
 }
 
+fn set_input_err_to_py(py: Python<'_>, e: SetInputError) -> PyErr {
+    match e {
+        SetInputError::Undeclared(_) => error::new_kalix_key_error(py, e.to_string()),
+        SetInputError::Data(_) => error::ModelValidationError::new_err(e.to_string()),
+    }
+}
+
 /// Strip `.pxt` or `.pxb` extension from a path, returning the base.
 ///
 /// Defers to the engine's pair convention (`pixie_io::strip_pixie_extension`)
@@ -96,40 +103,44 @@ fn _read_pixie_raw<'py>(
         return Err(PyValueError::new_err("No series in file"));
     }
 
-    // v0.1 requires all series share the same time grid.
-    let first = &series_list[0];
-    for s in &series_list[1..] {
-        if s.start_timestamp != first.start_timestamp
-            || s.step_size != first.step_size
-            || s.values.len() != first.values.len()
-        {
-            return Err(PyValueError::new_err(
-                "Series have differing time grids; v0.1 requires alignment",
-            ));
+    // One DataFrame has one set of timestamps, so series with values must share
+    // it; a mismatch is refused rather than shown misaligned. An empty series has
+    // no timestamps of its own and becomes a column of NaN on the others'.
+    let mut timestamps: Vec<i64> = Vec::new();
+    if let Some(first) = series_list.iter().find(|s| !s.values.is_empty()) {
+        for s in series_list.iter().filter(|s| !s.values.is_empty()) {
+            if s.start_timestamp != first.start_timestamp
+                || s.step_size != first.step_size
+                || s.values.len() != first.values.len()
+            {
+                return Err(PyValueError::new_err(format!(
+                    "Series '{}' and '{}' do not have the same timestamps; one DataFrame holds one set",
+                    first.name, s.name
+                )));
+            }
+        }
+        // Reconstruct timestamps as signed Unix seconds.
+        timestamps.reserve(first.values.len());
+        for i in 0..first.values.len() {
+            let wrapped = first
+                .start_timestamp
+                .wrapping_add((i as u64).wrapping_mul(first.step_size));
+            timestamps.push(wrap_to_i64(wrapped));
         }
     }
-
-    // Reconstruct timestamps as signed Unix seconds.
-    let n = first.values.len();
-    let mut timestamps: Vec<i64> = Vec::with_capacity(n);
-    for i in 0..n {
-        let wrapped = first
-            .start_timestamp
-            .wrapping_add((i as u64).wrapping_mul(first.step_size));
-        timestamps.push(wrap_to_i64(wrapped));
-    }
+    let n = timestamps.len();
     let ts_array = timestamps.into_pyarray_bound(py);
 
     let dict = PyDict::new_bound(py);
     for s in series_list {
-        let arr = s.values.into_pyarray_bound(py);
-        dict.set_item(s.name, arr)?;
+        let values = if s.values.is_empty() { vec![f64::NAN; n] } else { s.values };
+        dict.set_item(s.name, values.into_pyarray_bound(py))?;
     }
 
     Ok((ts_array, dict))
 }
 
-/// Write a Pixie .pxt/.pxb pair from a regular-stride time grid and per-series values.
+/// Write a Pixie .pxt/.pxb pair from regularly spaced timestamps and per-series values.
 ///
 /// - `timestamps_unix_seconds`: 1-D numpy array (int64) of Unix seconds; must be regular.
 /// - `series_names`: list of column names, one per array in `values_per_series`.
@@ -153,7 +164,8 @@ fn _write_pixie_raw(
         return Err(PyValueError::new_err("No data to write"));
     }
 
-    // Derive step from first two timestamps; fall back to daily if only one point.
+    // Derive step from first two timestamps. One point gives no step; 0 is
+    // written as is, so the Pixie is refused at run exactly as a one-row CSV is.
     let step_size: u64 = if ts.len() >= 2 {
         let diff = ts[1] - ts[0];
         if diff <= 0 {
@@ -163,7 +175,7 @@ fn _write_pixie_raw(
         }
         diff as u64
     } else {
-        86400
+        0
     };
 
     // Sanity-check regular stride (cheap to do once; cheap to skip later if it gets noisy).
@@ -659,11 +671,12 @@ impl PyModel {
                 "column_names and values_per_column must have the same length",
             ));
         }
-        let ts = timestamps_unix_seconds.as_slice()?;
-        if ts.is_empty() {
-            return Err(PyValueError::new_err("No data supplied"));
+        if column_names.is_empty() {
+            return Err(PyValueError::new_err("set_input() needs at least one column"));
         }
+        let ts = timestamps_unix_seconds.as_slice()?;
 
+        // Fewer than two rows gives step 0, as the CSV reader does; the engine rejects it.
         let step_size: u64 = if ts.len() >= 2 {
             let diff = ts[1] - ts[0];
             if diff <= 0 {
@@ -673,7 +686,7 @@ impl PyModel {
             }
             diff as u64
         } else {
-            86400
+            0
         };
         for i in 2..ts.len() {
             if (ts[i] - ts[i - 1]) as u64 != step_size {
@@ -685,7 +698,7 @@ impl PyModel {
                 )));
             }
         }
-        let start_timestamp = wrap_to_u64(ts[0]);
+        let start_timestamp = ts.first().map_or(0, |&t| wrap_to_u64(t));
 
         let mut columns = Vec::with_capacity(column_names.len());
         for (name, arr) in column_names.into_iter().zip(values_per_column.iter()) {
@@ -705,7 +718,7 @@ impl PyModel {
         }
 
         model_input_swap::set_input(&mut slf.inner, alias, start_timestamp, step_size, columns)
-            .map_err(|err_msg| error::new_kalix_key_error(py, err_msg))?;
+            .map_err(|e| set_input_err_to_py(py, e))?;
         slf.has_run = false;
         Ok(slf)
     }

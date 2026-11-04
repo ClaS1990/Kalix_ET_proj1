@@ -88,6 +88,61 @@ def test_pre1970_timestamps(tmp_path):
                                   check_index_type=_CHECK_INDEX_TYPE)
 
 
+def test_one_row_writes_no_timestep(tmp_path):
+    """One row gives no timestep. The index records 0, not an assumed day, so the
+    Pixie is refused at run exactly as a one-row CSV is; the row still round-trips."""
+    idx = pd.DatetimeIndex(["2020-01-01"], tz="UTC")
+    idx.name = "datetime"
+    df = pd.DataFrame({"v": [1.5]}, index=idx)
+    path = tmp_path / "one.pxb"
+
+    kalix.write_pixie(path, df)
+    fields = (tmp_path / "one.pxt").read_text().splitlines()[1].split(",")
+    assert fields[4].strip() == "0", fields
+    df2 = kalix.read_pixie(path)
+    assert list(df2["v"]) == [1.5]
+    assert list(df2.index) == list(idx)
+
+
+def test_empty_series_is_a_nan_column(tmp_path):
+    """A file mixing a full series with an empty one reads: the empty series has no
+    timestamps of its own and comes back as NaN on the full series' timestamps."""
+    idx = pd.date_range("2020-01-01", periods=3, freq="D", tz="UTC")
+    idx.name = "date"
+    kalix.write_pixie(tmp_path / "mixed.pxb", pd.DataFrame({"v": [1.0, 2.0, 3.0]}, index=idx))
+
+    # Append an empty series with no timestep, as the IDE writes one: a block of
+    # codec + zero length in the .pxb, and an index row with blank start and end.
+    import struct
+    pxb = tmp_path / "mixed.pxb"
+    offset = pxb.stat().st_size
+    with pxb.open("ab") as f:
+        f.write(struct.pack(">HI", 0, 0))
+    with (tmp_path / "mixed.pxt").open("a") as f:
+        f.write(f"2,{offset},,,0,0,empty\n")
+
+    df = kalix.read_pixie(pxb)
+    assert list(df.columns) == ["v", "empty"]
+    assert list(df["v"]) == [1.0, 2.0, 3.0]
+    assert df["empty"].isna().all() and len(df["empty"]) == 3
+
+
+def test_series_with_values_on_different_timestamps_are_refused(tmp_path):
+    """Two full series on different timesteps cannot share one index; refused, not misaligned."""
+    idx = pd.date_range("2020-01-01", periods=3, freq="D", tz="UTC")
+    idx.name = "date"
+    kalix.write_pixie(tmp_path / "steps.pxb", pd.DataFrame({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}, index=idx))
+    pxt = tmp_path / "steps.pxt"
+    lines = pxt.read_text().splitlines()
+    fields = lines[2].split(",")
+    fields[4] = "3600"  # the index gives each series its timestep
+    lines[2] = ",".join(fields)
+    pxt.write_text("\n".join(lines) + "\n")
+
+    with pytest.raises(ValueError, match="do not have the same timestamps"):
+        kalix.read_pixie(pxt)
+
+
 def test_nan_preserved(tmp_path):
     n = 10
     idx = pd.date_range("2020-01-01", periods=n, freq="h", tz="UTC")

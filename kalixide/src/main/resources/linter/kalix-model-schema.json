@@ -144,6 +144,12 @@
         "lztw",
         "lzfp",
         "lzfs",
+        "et_uztw",
+        "et_uzfw",
+        "et_lztw",
+        "et_adimp",
+        "et_riparian",
+        "aet",
         "area"
       ],
       "required_params": [

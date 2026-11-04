@@ -55,9 +55,17 @@ All seventeen model parameters — and the rainfall-weighting terms, when `rain`
 | lztw | Lower zone tension water at the end of the step [mm] |
 | lzfp | Lower zone primary free water at the end of the step [mm] |
 | lzfs | Lower zone supplemental free water at the end of the step [mm] |
+| et\_uztw | Evapotranspiration from upper zone tension water (E1) [mm] |
+| et\_uzfw | Evapotranspiration from upper zone free water (E2) [mm] |
+| et\_lztw | Evapotranspiration from lower zone tension water (E3) [mm] |
+| et\_adimp | Evapotranspiration from the variable impervious area (E5) [mm] |
+| et\_riparian | Evapotranspiration from channel flow in the riparian area (E4) [mm] |
+| aet | Total actual evapotranspiration [mm] |
 | area | Catchment area [km2] — the declared `area` value, static for the whole run. See [Static Node Properties](referencing-model-results.md#static-node-properties). |
 
 The five store results (`uztw`, `uzfw`, `lztw`, `lzfp`, `lzfs`) are depths over the pervious area; see [Soil moisture store outputs](sacramento-technical.md#soil-moisture-store-outputs).
+
+The evapotranspiration results are depths over the whole catchment and sum to `aet`; see [Evapotranspiration outputs](sacramento-technical.md#evapotranspiration-outputs).
 
 ## How the node works
 

@@ -239,6 +239,29 @@ Things to keep in mind when using them:
 
 - **Stores start empty.** All stores are empty at the start of the simulation, so the early part of each series reflects the warm-up (see Calibration guidance).
 
+## Evapotranspiration outputs
+
+The node reports each evapotranspiration component, and their total, for every step:
+
+| Output | Component | Drawn from | Area it applies to |
+| --- | --- | --- | --- |
+| et_uztw | E1 | Upper zone tension water | Pervious area |
+| et_uzfw | E2 | Upper zone free water | Pervious area |
+| et_lztw | E3 | Lower zone tension water | Pervious area |
+| et_adimp | E5 | Variable impervious area (ADIMP) store | ADIMP |
+| et_riparian | E4 | Channel flow, at most E · SARVA | Whole catchment |
+| aet | Total | Sum of the five components | Whole catchment |
+
+Things to keep in mind when using them:
+
+- **Depths over the whole catchment.** Each component is scaled by the area it applies to (1 − PCTIM − ADIMP for E1 to E3, ADIMP for E5), so the components sum to `aet` and add directly to `runoff_depth`. Multiply by the catchment area for a volume in ML. The stores, by contrast, are depths over the pervious area.
+
+- **Closing a balance.** Over a run, rain = `runoff_depth` + `aet` + the side loss + the SSOUT loss + the change in storage, where the side loss is `flobf` · SIDE / (1 + SIDE) as a depth, and the storage is the pervious fraction times uztw + uzfw + lztw + (1 + SIDE) · (lzfp + lzfs), plus ADIMP times the ADIMP store (not reported), plus water in the unit hydrograph.
+
+- **E2 needs E above UZTWM.** Free water evaporates only when E1 = E · uztw / UZTWM exceeds uztw, which happens only when E exceeds UZTWM. With daily PET of a few mm and UZTWM of tens of mm, `et_uzfw` is usually zero throughout.
+
+- **Rounding.** A store emptied by evaporation can be left a few ulp below zero, so a component can be reported as a tiny negative number, of order 1e-16 mm.
+
 ## Calibration guidance
 
 - **Warm-up.** Sacramento has substantial soil-moisture memory; use a warm-up of at least 2 years (5+ for arid catchments) to remove the influence of initial states.

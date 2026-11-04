@@ -179,6 +179,94 @@ fn test_sacramento_node_store_outputs() {
     }
 }
 
+/// The evapotranspiration outputs report the model's ET components step by
+/// step, and the components sum to the total.
+#[test]
+fn test_sacramento_node_et_outputs() {
+
+    //Create a new model. Add some data.
+    let mut m = Model::new();
+    m.load_input_data("./src/tests/example_data/fors/rain_infilled.csv", None).expect("rain data should load");
+    m.load_input_data("./src/tests/example_data/fors/mpot_rolled.csv", None).expect("evap data should load");
+
+    //Create a node and add it to the model. Nonzero adimp and sarva, and a
+    //small uztwm, so every component is exercised: free water only evaporates
+    //on days when PET exceeds uztwm.
+    let set_params = |s: &mut Sacramento| {
+        s.set_params(0.1,45.0,60.0,0.01,
+                     0.01,150.0,0.05,0.11,
+                     1.5,0.02,0.2,0.01,
+                     25.0,0.2,5.0,15.0,0.1);
+    };
+    let mut n = SacramentoNode::new();
+    n.name = "my_sac_node".to_owned();
+    n.area_km2 = 228.0;
+    n.rain_mm_input = DynamicInput::from_string("data.rain_infilled_csv.by_name.value", &mut m.data_cache, true, None)
+        .expect("Failed to parse rain expression");
+    n.evap_mm_input = DynamicInput::from_string("data.mpot_rolled_csv.by_name.value", &mut m.data_cache, true, None)
+        .expect("Failed to parse evap expression");
+    set_params(&mut n.sacramento_model);
+    m.add_node(NodeEnum::SacramentoNode(n));
+
+    //Specify some outputs
+    let components = ["et_uztw", "et_uzfw", "et_lztw", "et_adimp", "et_riparian"];
+    for output in ["rain", "evap", "aet"].iter().chain(components.iter()) {
+        m.outputs.push(format!("node.my_sac_node.{}", output));
+    }
+
+    //Configure and run the model
+    m.configure().expect("Configuration error");
+    m.run().expect("Simulation error");
+
+    //Read the results
+    let mut series = |name: &str| -> Vec<f64> {
+        let idx = m.data_cache.get_series_idx(&format!("node.my_sac_node.{}", name), false).unwrap();
+        m.data_cache.series[idx].values.clone()
+    };
+    let rain = series("rain");
+    let evap = series("evap");
+    let aet = series("aet");
+    let recorded: Vec<Vec<f64>> = components.iter().map(|s| series(s)).collect();
+    let n_steps = rain.len();
+    assert!(n_steps > 0);
+
+    //Each output must match its own component in a standalone model, step by step.
+    let mut reference = Sacramento::new();
+    set_params(&mut reference);
+    reference.initialize_state_empty();
+    for i in 0..n_steps {
+        reference.run_step(rain[i], evap[i]);
+        let expected = [
+            reference.et_uztw,
+            reference.et_uzfw,
+            reference.et_lztw,
+            reference.et_adimp,
+            reference.et_riparian,
+        ];
+        for (j, component) in components.iter().enumerate() {
+            assert_eq!(recorded[j][i], expected[j], "step {}: {}", i, component);
+        }
+        assert_eq!(aet[i], reference.aet, "step {}: aet", i);
+
+        //The components sum to the total and are non-negative, to rounding: a
+        //store emptied by evaporation can be left a few ulp below zero.
+        let sum: f64 = recorded.iter().map(|v| v[i]).sum();
+        assert!((aet[i] - sum).abs() <= 1e-12 * aet[i].max(1.0), "step {}: aet {} vs sum {}", i, aet[i], sum);
+        for (j, component) in components.iter().enumerate() {
+            assert!(recorded[j][i] >= -1e-12, "step {}: {} = {}", i, component, recorded[j][i]);
+        }
+    }
+
+    //The comparison above only pins each name to its component if each one is
+    //active and the series differ.
+    for j in 0..components.len() {
+        assert!(recorded[j].iter().any(|&v| v > 0.0), "{} is never positive", components[j]);
+        for k in (j + 1)..components.len() {
+            assert!(recorded[j] != recorded[k], "{} and {} are identical series", components[j], components[k]);
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Ratio parameters (sarvaonpctim, lzpkonlzsk)
 // ---------------------------------------------------------------------------

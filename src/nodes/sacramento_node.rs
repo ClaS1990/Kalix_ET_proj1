@@ -48,6 +48,12 @@ pub struct SacramentoNode {
     recorder_idx_lztw: Option<usize>,
     recorder_idx_lzfs: Option<usize>,
     recorder_idx_lzfp: Option<usize>,
+    recorder_idx_et_uztw: Option<usize>,
+    recorder_idx_et_uzfw: Option<usize>,
+    recorder_idx_et_lztw: Option<usize>,
+    recorder_idx_et_adimp: Option<usize>,
+    recorder_idx_et_riparian: Option<usize>,
+    recorder_idx_aet: Option<usize>,
 }
 
 impl SacramentoNode {
@@ -105,6 +111,12 @@ impl Node for SacramentoNode {
         self.recorder_idx_lztw = recorder(data_cache, &self.name, "lztw");
         self.recorder_idx_lzfs = recorder(data_cache, &self.name, "lzfs");
         self.recorder_idx_lzfp = recorder(data_cache, &self.name, "lzfp");
+        self.recorder_idx_et_uztw = recorder(data_cache, &self.name, "et_uztw");
+        self.recorder_idx_et_uzfw = recorder(data_cache, &self.name, "et_uzfw");
+        self.recorder_idx_et_lztw = recorder(data_cache, &self.name, "et_lztw");
+        self.recorder_idx_et_adimp = recorder(data_cache, &self.name, "et_adimp");
+        self.recorder_idx_et_riparian = recorder(data_cache, &self.name, "et_riparian");
+        self.recorder_idx_aet = recorder(data_cache, &self.name, "aet");
         //Return
         Ok(())
     }
@@ -185,6 +197,24 @@ impl Node for SacramentoNode {
         }
         if let Some(idx) = self.recorder_idx_lzfs {
             data_cache.add_value_at_index(idx, self.sacramento_model.get_lzfs());
+        }
+        if let Some(idx) = self.recorder_idx_et_uztw {
+            data_cache.add_value_at_index(idx, self.sacramento_model.et_uztw);
+        }
+        if let Some(idx) = self.recorder_idx_et_uzfw {
+            data_cache.add_value_at_index(idx, self.sacramento_model.et_uzfw);
+        }
+        if let Some(idx) = self.recorder_idx_et_lztw {
+            data_cache.add_value_at_index(idx, self.sacramento_model.et_lztw);
+        }
+        if let Some(idx) = self.recorder_idx_et_adimp {
+            data_cache.add_value_at_index(idx, self.sacramento_model.et_adimp);
+        }
+        if let Some(idx) = self.recorder_idx_et_riparian {
+            data_cache.add_value_at_index(idx, self.sacramento_model.et_riparian);
+        }
+        if let Some(idx) = self.recorder_idx_aet {
+            data_cache.add_value_at_index(idx, self.sacramento_model.aet);
         }
 
         // Reset upstream inflow for next timestep

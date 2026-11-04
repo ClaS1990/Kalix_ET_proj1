@@ -47,6 +47,16 @@ pub struct Sacramento {
     pub floin: f64,
     pub flosf: f64,
 
+    // Evapotranspiration components (public), each a depth [mm] over the whole
+    // catchment, so they sum to the total: aet = et_uztw + et_uzfw + et_lztw
+    // + et_adimp + et_riparian.
+    pub et_uztw: f64,       // E1, from upper zone tension water, scaled by the pervious fraction
+    pub et_uzfw: f64,       // E2, from upper zone free water, scaled by the pervious fraction
+    pub et_lztw: f64,       // E3, from lower zone tension water, scaled by the pervious fraction
+    pub et_adimp: f64,      // E5, from the ADIMP store, scaled by ADIMP
+    pub et_riparian: f64,   // E4, from channel flow, limited to PET * SARVA
+    pub aet: f64,           // Total actual evapotranspiration
+
     // TODO: which of these can be moved into the functions?
     // Other internal vars
     adimc: f64,
@@ -245,6 +255,12 @@ impl Sacramento {
         self.flwbf = 0f64;
         self.flwsf = 0f64;
         self.evapuzfw = 0f64;
+        self.et_uztw = 0f64;
+        self.et_uzfw = 0f64;
+        self.et_lztw = 0f64;
+        self.et_adimp = 0f64;
+        self.et_riparian = 0f64;
+        self.aet = 0f64;
 
         // Set the UH empty
         self.unit_hydrograph.reset_state_to_empty();
@@ -327,6 +343,12 @@ impl Sacramento {
         // Adjust impervious area store
         self.adimc -= e5;
         self.evapuzfw = self.evapuzfw * self.pervious_area_fraction;
+
+        // Evapotranspiration components as depths over the whole catchment
+        self.et_uztw = evapuztw * self.pervious_area_fraction;
+        self.et_uzfw = self.evapuzfw;
+        self.et_lztw = e3 * self.pervious_area_fraction;
+        self.et_adimp = e5 * self.adimp;
 
         // Resupply lower zone tension with water from the lower zone free, if more water is available there.
         let mut ratiolztw = 1f64;
@@ -541,6 +563,8 @@ impl Sacramento {
         // Subtract losses from the total channel flow (going to the subsurface discharge)
         self.channelflow = 0f64.max(self.flwbf + self.flwsf - self.ssout);
         let evap_channel_water = self.channelflow.min(evapt * self.sarva);
+        self.et_riparian = evap_channel_water;
+        self.aet = self.et_uztw + self.et_uzfw + self.et_lztw + self.et_adimp + self.et_riparian;
 
         // Total runoff
         self.runoff = self.channelflow - evap_channel_water;
